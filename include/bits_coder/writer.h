@@ -9,7 +9,7 @@ class Writer
 {
 public:
     // data为nullptr时不写入，只计算长度
-    Writer(uint8_t *data, ByteOrders byte_order) :
+    Writer(uint8_t *data, ByteOrders byte_order = ByteOrders::kBe) :
         data_(data),
         byte_order_(byte_order)
     {
@@ -22,35 +22,57 @@ public:
     }
 
     // bit
-    void WriteBit(int64_t val)
+    template <typename T>
+    void WriteBits(T val, size_t bits)
     {
-
-    }
-
-    void WriteBits(int64_t val, size_t bits)
-    {
-        for (--bits; bits > 0; --bits)
+        if (!data_)
         {
-            if (data_)
+            SkipBits(bits);
+            return;
+        }
+
+        if (0 != curr_save_point_.bit_pos)
+        {
+            if (curr_save_point_.bit_pos + bits < 8)
             {
-                if ((val >> bits) & 0x01)
-                {
-                    data_[curr_save_point_.offset] |= curr_save_point_.bit_mask;
-                }
-                else
-                {
-                    data_[curr_save_point_.offset] &= ~curr_save_point_.bit_mask;
-                }
+                uint8_t mask = kBitNegMasks[curr_save_point_.bit_pos] | kBitMasks[8 - curr_save_point_.bit_pos - bits];
+                *curr_save_point_.ptr = (*curr_save_point_.ptr & mask) |
+                    ((val & kBitMasks[8 - bits]) << (8 - curr_save_point_.bit_pos - bits));
+                curr_save_point_.bit_pos += bits;
+                return;
             }
 
-            NextBitMask();
+            *curr_save_point_.ptr = (*curr_save_point_.ptr & kBitNegMasks[curr_save_point_.bit_pos]) |
+                ((val >> (bits - (8 - curr_save_point_.bit_pos))) & kBitMasks[curr_save_point_.bit_pos]);
+
+            bits -= (8 - curr_save_point_.bit_pos);
+            curr_save_point_.bit_pos = 0;
+            ++curr_save_point_.ptr;
+        }
+
+        size_t bytes = bits << 3;
+        bits &= 0xb111;
+        int64_t bytes_val = val >> bits;
+        curr_save_point_.ptr += bytes;
+
+        for (uint8_t *ptr = curr_save_point_.ptr - 1; bytes > 0; --bytes)
+        {
+            *ptr-- = bytes_val & 0xFF;
+            bytes_val >>= 8;
+        }
+
+        if (bits > 0)
+        {
+            *curr_save_point_.ptr = (*curr_save_point_.ptr & kBitMasks[bits]) | ((val << (8 - bits)) & 0xFF);
+            curr_save_point_.bit_pos = bits;
         }
     }
 
-    void WriteUe(int64_t val)
+    template <typename T>
+    void WriteUe(T val)
     {
         size_t bits = 0;
-        for (int64_t tmp = val + 1; tmp > 0; tmp >>= 1)
+        for (T tmp = val + 1; tmp > 0; tmp >>= 1)
         {
             ++bits;
         }
@@ -59,32 +81,40 @@ public:
         WriteBits(val + 1, bits);
     }
 
-    void WriteSe(int64_t val)
+    template <typename T>
+    void WriteSe(T val)
     {
         WriteUe((val > 0) ? (2 * val - 1) : (-val * 2));
     }
 
     void WriteAlign()
     {
-        while (0x80 != curr_save_point_.bit_mask)
+        if (0 != curr_save_point_.bit_pos)
         {
-            WriteBits(0, 1);
+            if (data_)
+            {
+                *curr_save_point_.ptr &= kBitNegMasks[curr_save_point_.bit_pos];
+            }
+
+            ++curr_save_point_.ptr;
+            curr_save_point_.bit_pos = 0;
         }
     }
 
     // byte
-    void WriteByte(int64_t val)
+    template <typename T>
+    void WriteByte(T val)
     {
         if (!data_)
         {
-            ++curr_save_point_.offset;
+            ++curr_save_point_.ptr;
             return;
         }
 
-        if (0x80 == curr_save_point_.bit_mask)
+        if (0 == curr_save_point_.bit_pos)
         {
-            data_[curr_save_point_.offset] = val & 0xFF;
-            ++curr_save_point_.offset;
+            *curr_save_point_.ptr = val & 0xFF;
+            ++curr_save_point_.ptr;
         }
         else
         {
@@ -92,26 +122,27 @@ public:
         }
     }
 
-    void Write2Bytes(int64_t val)
+    template <typename T>
+    void Write2Bytes(T val)
     {
         if (!data_)
         {
-            curr_save_point_.offset += 2;
+            curr_save_point_.ptr += 2;
             return;
         }
 
-        int64_t low_val = val;
-        int64_t high_val = val >> 8;
+        T low_val = val;
+        T high_val = val >> 8;
         switch (byte_order_)
         {
-        case ByteOrders::kLe:
-            WriteByte(low_val);
-            WriteByte(high_val);
-            break;
-
         case ByteOrders::kBe:
             WriteByte(high_val);
             WriteByte(low_val);
+            break;
+
+        case ByteOrders::kLe:
+            WriteByte(low_val);
+            WriteByte(high_val);
             break;
 
         default:
@@ -119,26 +150,27 @@ public:
         }
     }
 
-    void Write4Bytes(int64_t val)
+    template <typename T>
+    void Write4Bytes(T val)
     {
         if (!data_)
         {
-            curr_save_point_.offset += 4;
+            curr_save_point_.ptr += 4;
             return;
         }
 
-        int64_t low_val = val;
-        int64_t high_val = val >> 16;
+        T low_val = val;
+        T high_val = val >> 16;
         switch (byte_order_)
         {
-        case ByteOrders::kLe:
-            Write2Bytes(low_val);
-            Write2Bytes(high_val);
-            break;
-
         case ByteOrders::kBe:
             Write2Bytes(high_val);
             Write2Bytes(low_val);
+            break;
+
+        case ByteOrders::kLe:
+            Write2Bytes(low_val);
+            Write2Bytes(high_val);
             break;
 
         default:
@@ -146,26 +178,27 @@ public:
         }
     }
 
-    void Write8Bytes(int64_t val)
+    template <typename T>
+    void Write8Bytes(T val)
     {
         if (!data_)
         {
-            curr_save_point_.offset += 8;
+            curr_save_point_.ptr += 8;
             return;
         }
 
-        int64_t low_val = val;
-        int64_t high_val = val >> 32;
+        T low_val = val;
+        T high_val = val >> 32;
         switch (byte_order_)
         {
-        case ByteOrders::kLe:
-            Write4Bytes(low_val);
-            Write4Bytes(high_val);
-            break;
-
         case ByteOrders::kBe:
             Write4Bytes(high_val);
             Write4Bytes(low_val);
+            break;
+
+        case ByteOrders::kLe:
+            Write4Bytes(low_val);
+            Write4Bytes(high_val);
             break;
 
         default:
@@ -178,14 +211,14 @@ public:
     {
         if (!data_)
         {
-            curr_save_point_.offset += size;
+            curr_save_point_.ptr += size;
             return;
         }
 
-        if (0x80 == curr_save_point_.bit_mask)
+        if (0 == curr_save_point_.bit_pos)
         {
-            memcpy(data_ + curr_save_point_.offset, data, size);
-            curr_save_point_.offset += size;
+            memcpy(curr_save_point_.ptr, data, size);
+            curr_save_point_.ptr += size;
         }
         else
         {
@@ -201,18 +234,14 @@ public:
     // skip
     void SkipBits(size_t bits)
     {
-        SkipBytes(bits / 8);
-
-        bits %= 8;
-        for (; bits > 0; --bits)
-        {
-            NextBitMask();
-        }
+        curr_save_point_.bit_pos += bits;
+        curr_save_point_.ptr += (curr_save_point_.bit_pos >> 3);
+        curr_save_point_.bit_pos &= 0xb111;
     }
 
     void SkipBytes(size_t bytes)
     {
-        curr_save_point_.offset += bytes;
+        curr_save_point_.ptr += bytes;
     }
 
     // save/load
@@ -226,20 +255,15 @@ public:
         curr_save_point_ = save_point;
     }
 
-    size_t CurrSize() const
+    const uint8_t *CurrPtr() const
     {
-        return (0x80 == curr_save_point_.bit_mask) ? (curr_save_point_.offset) : (curr_save_point_.offset + 1);
+        return curr_save_point_.ptr;
     }
 
-private:
-    void NextBitMask()
+    size_t CurrSize() const
     {
-        curr_save_point_.bit_mask >>= 1;
-        if (0 == curr_save_point_.bit_mask)
-        {
-            ++curr_save_point_.offset;
-            curr_save_point_.bit_mask = 0x80;
-        }
+        size_t offset = curr_save_point_.ptr - data_;
+        return (0 == curr_save_point_.bit_pos) ? (offset) : (offset + 1);
     }
 
 private:
