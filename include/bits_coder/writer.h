@@ -231,6 +231,29 @@ public:
         }
     }
 
+    void FillBytes(uint8_t val, size_t size)
+    {
+        if (!data_)
+        {
+            curr_save_point_.ptr += size;
+            return;
+        }
+
+        if (0 == curr_save_point_.bit_pos)
+        {
+            memset(curr_save_point_.ptr, val, size);
+            curr_save_point_.ptr += size;
+        }
+        else
+        {
+            for (; size > 0; --size)
+            {
+                WriteByte(val);
+            }
+            return;
+        }
+    }
+
     // skip
     void SkipBits(size_t bits)
     {
